@@ -39,16 +39,12 @@ async function obterOuCriarPrefeitura(supabase: any, userId: string): Promise<st
       cityhallId = prefeituraExistente.id
       console.log('✅ Usando prefeitura padrão existente:', cityhallId)
     } else {
-      // 3. Criar nova prefeitura padrão
+      // 3. Criar nova prefeitura padrão (APENAS com colunas que existem no schema)
       const { data: novaPrefeitura, error: criarError } = await supabase
         .from('cityhalls')
         .insert([{
           nome: 'Prefeitura Padrão',
-          cnpj: '00000000000000',
-          endereco: 'Endereço Padrão',
-          telefone: '(00) 0000-0000',
-          email: 'contato@prefeitura.gov.br',
-          criado_em: new Date().toISOString()
+          cnpj: '00000000000000'
         }])
         .select()
         .single()
@@ -169,11 +165,11 @@ export async function GET(request: NextRequest) {
       return addCorsHeaders(response)
     }
 
-    // Buscar todos os processos administrativos
+    // Buscar todos os processos administrativos (usando created_at)
     const { data, error } = await supabase
       .from('processos_administrativos')
       .select('*')
-      .order('criado_em', { ascending: false })
+      .order('created_at', { ascending: false })
 
     if (error) {
       console.error('Erro ao buscar processos:', error)
@@ -257,15 +253,14 @@ export async function POST(request: NextRequest) {
     // Gerar número do processo automaticamente
     const numeroProcesso = await gerarNumeroProcesso(supabase, body.tipo)
 
-    // Inserir novo processo com número gerado automaticamente e cityhall_id GARANTIDO
+    // Inserir novo processo (usando created_at que será gerado automaticamente pelo banco)
     const { data, error } = await supabase
       .from('processos_administrativos')
       .insert([{
         ...body,
         numero_processo: numeroProcesso,
-        cityhall_id: cityhallId, // SEMPRE terá valor válido agora
-        criado_por: user.id,
-        criado_em: new Date().toISOString()
+        cityhall_id: cityhallId,
+        criado_por: user.id
       }])
       .select()
       .single()
