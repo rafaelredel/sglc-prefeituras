@@ -14,15 +14,16 @@ import { toast } from 'sonner'
 
 interface User {
   id: string
-  name: string
   email: string
-  phone: string | null
-  position: string | null
-  active: boolean
-  locked_until: string | null
-  last_login: string | null
-  cityhalls: { name: string } | null
-  user_roles: { name: string; slug: string }
+  user_metadata: {
+    name?: string
+    role?: string
+    cityhall_id?: string
+    phone?: string
+    position?: string
+    active?: boolean
+  }
+  last_sign_in_at: string | null
 }
 
 interface Role {
@@ -75,17 +76,41 @@ export default function UsersManagementPage() {
     try {
       setLoading(true)
 
-      // Carregar usuários
-      const { data: usersData } = await supabase
-        .from('users')
-        .select(`
-          *,
-          cityhalls (name),
-          user_roles (name, slug)
-        `)
-        .order('name')
+      // Obter usuário atual
+      const { data: { user: currentUser } } = await supabase.auth.getUser()
+      const currentUserMetadata = currentUser?.user_metadata || {}
+      const currentRole = currentUserMetadata.role || 'operacional'
+      const currentCityhall = currentUserMetadata.cityhall_id || null
 
-      if (usersData) setUsers(usersData)
+      // Carregar usuários do Auth
+      const { data: { users: authUsers }, error: usersError } = await supabase.auth.admin.listUsers()
+
+      if (usersError) {
+        console.error('Erro ao carregar usuários:', usersError)
+        toast.error('Erro ao carregar usuários')
+        return
+      }
+
+      // Aplicar filtros baseados no nível de acesso
+      let filteredUsers = authUsers || []
+
+      if (currentRole === 'master') {
+        // Administrador Geral vê TODOS os usuários
+        console.log('✅ Administrador Geral - Mostrando todos os usuários')
+      } else if (currentRole === 'admin_municipal') {
+        // Administrador da Prefeitura vê apenas usuários da sua prefeitura
+        filteredUsers = filteredUsers.filter(user => {
+          const userCityhall = user.user_metadata?.cityhall_id
+          return userCityhall === currentCityhall
+        })
+        console.log(`✅ Administrador Municipal - Mostrando usuários da prefeitura ${currentCityhall}`)
+      } else {
+        // Usuário Operacional não vê outros usuários
+        filteredUsers = []
+        console.log('✅ Usuário Operacional - Sem permissão para ver usuários')
+      }
+
+      setUsers(filteredUsers)
 
       // Carregar roles
       const { data: rolesData } = await supabase
@@ -96,11 +121,18 @@ export default function UsersManagementPage() {
       if (rolesData) setRoles(rolesData)
 
       // Carregar prefeituras
-      const { data: cityhallsData } = await supabase
+      let cityhallsQuery = supabase
         .from('cityhalls')
         .select('id, name')
         .eq('status', 'active')
         .order('name')
+
+      // Se for admin municipal, mostrar apenas sua prefeitura
+      if (currentRole === 'admin_municipal' && currentCityhall) {
+        cityhallsQuery = cityhallsQuery.eq('id', currentCityhall)
+      }
+
+      const { data: cityhallsData } = await cityhallsQuery
 
       if (cityhallsData) setCityhalls(cityhallsData)
     } catch (error) {
@@ -141,25 +173,18 @@ export default function UsersManagementPage() {
     }
   }
 
-  const handleUnlockUser = async (userId: string) => {
-    try {
-      await unlockUser(userId)
-      toast.success('Usuário desbloqueado com sucesso!')
-      loadData()
-    } catch (error) {
-      console.error('Erro ao desbloquear usuário:', error)
-      toast.error('Erro ao desbloquear usuário')
-    }
-  }
-
   const handleToggleUserStatus = async (userId: string, currentStatus: boolean) => {
     if (!supabase) return
 
     try {
-      await supabase
-        .from('users')
-        .update({ active: !currentStatus })
-        .eq('id', userId)
+      // Atualizar metadados do usuário no Auth
+      const { error } = await supabase.auth.admin.updateUserById(userId, {
+        user_metadata: {
+          active: !currentStatus
+        }
+      })
+
+      if (error) throw error
 
       toast.success(`Usuário ${!currentStatus ? 'ativado' : 'desativado'} com sucesso!`)
       loadData()
@@ -169,17 +194,26 @@ export default function UsersManagementPage() {
     }
   }
 
-  const filteredUsers = users.filter(user =>
-    user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    user.email.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  const filteredUsers = users.filter(user => {
+    const name = user.user_metadata?.name || user.email || ''
+    const email = user.email || ''
+    const searchLower = searchTerm.toLowerCase()
+    
+    return name.toLowerCase().includes(searchLower) || email.toLowerCase().includes(searchLower)
+  })
 
-  const canManageUser = (user: User) => {
-    if (currentUserRole === 'master') return true
-    if (currentUserRole === 'admin_municipal') {
-      return user.cityhalls?.name && currentCityhallId === user.cityhalls.name
-    }
-    return false
+  const canManageUsers = () => {
+    return currentUserRole === 'master' || currentUserRole === 'admin_municipal'
+  }
+
+  const getRoleName = (roleSlug: string) => {
+    const role = roles.find(r => r.slug === roleSlug)
+    return role?.name || roleSlug
+  }
+
+  const getCityhallName = (cityhallId: string) => {
+    const cityhall = cityhalls.find(c => c.id === cityhallId)
+    return cityhall?.name || 'Sem prefeitura'
   }
 
   if (loading) {
@@ -190,12 +224,30 @@ export default function UsersManagementPage() {
     )
   }
 
+  if (!canManageUsers()) {
+    return (
+      <div className="container mx-auto p-6 max-w-7xl">
+        <Card>
+          <CardContent className="py-12 text-center">
+            <Shield className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Acesso Restrito</h2>
+            <p className="text-gray-600">Você não tem permissão para gerenciar usuários.</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div className="container mx-auto p-6 max-w-7xl">
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Gestão de Usuários</h1>
-          <p className="text-gray-600 mt-1">Gerencie usuários e permissões do sistema</p>
+          <p className="text-gray-600 mt-1">
+            {currentUserRole === 'master' 
+              ? 'Gerencie todos os usuários do sistema' 
+              : 'Gerencie usuários da sua prefeitura'}
+          </p>
         </div>
 
         <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
@@ -267,14 +319,19 @@ export default function UsersManagementPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="cityhall">Prefeitura *</Label>
+                <Label htmlFor="cityhall">
+                  Prefeitura {currentUserRole === 'master' ? '*' : ''}
+                </Label>
                 <select
                   id="cityhall"
                   className="w-full px-3 py-2 border border-gray-300 rounded-md"
                   value={newUserData.cityhall_id}
                   onChange={(e) => setNewUserData({ ...newUserData, cityhall_id: e.target.value })}
+                  disabled={currentUserRole === 'admin_municipal'}
                 >
-                  <option value="">Selecione...</option>
+                  <option value="">
+                    {currentUserRole === 'master' ? 'Selecione...' : 'Nenhuma (Admin Master)'}
+                  </option>
                   {cityhalls.map((cityhall) => (
                     <option key={cityhall.id} value={cityhall.id}>
                       {cityhall.name}
@@ -292,11 +349,19 @@ export default function UsersManagementPage() {
                   onChange={(e) => setNewUserData({ ...newUserData, role_id: e.target.value })}
                 >
                   <option value="">Selecione...</option>
-                  {roles.map((role) => (
-                    <option key={role.id} value={role.id}>
-                      {role.name}
-                    </option>
-                  ))}
+                  {roles
+                    .filter(role => {
+                      // Admin municipal não pode criar master
+                      if (currentUserRole === 'admin_municipal' && role.slug === 'master') {
+                        return false
+                      }
+                      return true
+                    })
+                    .map((role) => (
+                      <option key={role.id} value={role.id}>
+                        {role.name}
+                      </option>
+                    ))}
                 </select>
               </div>
             </div>
@@ -334,75 +399,69 @@ export default function UsersManagementPage() {
 
       {/* Lista de Usuários */}
       <div className="grid gap-4">
-        {filteredUsers.map((user) => (
-          <Card key={user.id}>
-            <CardContent className="pt-6">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <h3 className="text-lg font-semibold text-gray-900">{user.name}</h3>
-                    <Badge variant={user.active ? 'default' : 'secondary'}>
-                      {user.active ? 'Ativo' : 'Inativo'}
-                    </Badge>
-                    {user.locked_until && new Date(user.locked_until) > new Date() && (
-                      <Badge variant="destructive">Bloqueado</Badge>
+        {filteredUsers.map((user) => {
+          const metadata = user.user_metadata || {}
+          const isActive = metadata.active !== false
+          const userName = metadata.name || user.email?.split('@')[0] || 'Usuário'
+          const userRole = metadata.role || 'operacional'
+          const userCityhall = metadata.cityhall_id
+
+          return (
+            <Card key={user.id}>
+              <CardContent className="pt-6">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <h3 className="text-lg font-semibold text-gray-900">{userName}</h3>
+                      <Badge variant={isActive ? 'default' : 'secondary'}>
+                        {isActive ? 'Ativo' : 'Inativo'}
+                      </Badge>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-sm text-gray-600">
+                      <div className="flex items-center gap-2">
+                        <Mail className="h-4 w-4" />
+                        {user.email}
+                      </div>
+                      {metadata.phone && (
+                        <div className="flex items-center gap-2">
+                          <Phone className="h-4 w-4" />
+                          {metadata.phone}
+                        </div>
+                      )}
+                      {userCityhall && (
+                        <div className="flex items-center gap-2">
+                          <Building2 className="h-4 w-4" />
+                          {getCityhallName(userCityhall)}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <Shield className="h-4 w-4" />
+                        {getRoleName(userRole)}
+                      </div>
+                    </div>
+
+                    {user.last_sign_in_at && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        Último acesso: {new Date(user.last_sign_in_at).toLocaleString('pt-BR')}
+                      </p>
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4 text-sm text-gray-600">
-                    <div className="flex items-center gap-2">
-                      <Mail className="h-4 w-4" />
-                      {user.email}
-                    </div>
-                    {user.phone && (
-                      <div className="flex items-center gap-2">
-                        <Phone className="h-4 w-4" />
-                        {user.phone}
-                      </div>
-                    )}
-                    {user.cityhalls && (
-                      <div className="flex items-center gap-2">
-                        <Building2 className="h-4 w-4" />
-                        {user.cityhalls.name}
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <Shield className="h-4 w-4" />
-                      {user.user_roles.name}
-                    </div>
-                  </div>
-
-                  {user.last_login && (
-                    <p className="text-xs text-gray-500 mt-2">
-                      Último acesso: {new Date(user.last_login).toLocaleString('pt-BR')}
-                    </p>
-                  )}
-                </div>
-
-                {canManageUser(user) && (
                   <div className="flex gap-2">
-                    {user.locked_until && new Date(user.locked_until) > new Date() && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleUnlockUser(user.id)}
-                      >
-                        <Unlock className="h-4 w-4" />
-                      </Button>
-                    )}
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => handleToggleUserStatus(user.id, user.active)}
+                      onClick={() => handleToggleUserStatus(user.id, isActive)}
                     >
-                      {user.active ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
+                      {isActive ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
                     </Button>
                   </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })}
       </div>
 
       {filteredUsers.length === 0 && (

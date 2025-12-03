@@ -6,9 +6,7 @@ import Link from 'next/link'
 import { 
   LayoutDashboard, 
   FileText, 
-  FileSignature, 
   BarChart3, 
-  Paperclip, 
   Settings,
   Bell,
   LogOut,
@@ -25,10 +23,8 @@ interface DashboardLayoutProps {
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
-  { icon: FileText, label: 'Licitações', href: '/dashboard/licitacoes' },
-  { icon: FileSignature, label: 'Contratos', href: '/dashboard/contratos' },
+  { icon: FileText, label: 'Processos Administrativos', href: '/dashboard/processos-administrativos' },
   { icon: BarChart3, label: 'Relatórios', href: '/dashboard/relatorios' },
-  { icon: Paperclip, label: 'Anexos', href: '/dashboard/anexos' },
   { icon: Settings, label: 'Configurações', href: '/dashboard/configuracoes' },
 ]
 
